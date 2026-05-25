@@ -94,11 +94,13 @@ export type ChartType =
   | "sunburst"
   | "funnel"
   | "waffle"
+  | "marimekko"
   // distribution
   | "histogram"
   | "density"
   | "box"
   | "violin"
+  | "ridgeline"
   | "ecdf"
   // relationship
   | "scatter"
@@ -109,6 +111,7 @@ export type ChartType =
   | "parallel_coordinates"
   // hierarchy / flow
   | "tree"
+  | "dendrogram"
   | "sankey"
   | "chord"
   | "network"

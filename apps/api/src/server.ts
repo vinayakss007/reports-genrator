@@ -8,6 +8,7 @@ import { Storage } from "@reports/storage";
 import { registerUploadRoutes } from "./routes/uploads.js";
 import { registerSourceRoutes } from "./routes/sources.js";
 import { registerDatasetRoutes } from "./routes/datasets.js";
+import { registerChartRoutes } from "./routes/charts.js";
 
 const PORT = Number.parseInt(process.env.API_PORT ?? "3001", 10);
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
@@ -48,6 +49,9 @@ export async function buildServer() {
   registerUploadRoutes(app, storage);
   registerSourceRoutes(app, storage);
   registerDatasetRoutes(app, storage);
+
+  // Phase 2/4/6: chart compute + stats.
+  registerChartRoutes(app, storage);
 
   return app;
 }

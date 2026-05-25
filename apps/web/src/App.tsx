@@ -1,4 +1,13 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ChartRenderer } from "./charts/Renderer.js";
+import { ChartEditor } from "./charts/Editor.js";
+import { StatsOverlay } from "./charts/StatsOverlay.js";
+import type {
+  ChartSpec,
+  ComputedChart,
+  Profile,
+  SeriesStats,
+} from "./charts/types.js";
 
 interface Recommendation {
   chart: string;
@@ -9,19 +18,6 @@ interface RecommendationResult {
   recommendations: Recommendation[];
   source: "core" | "ai";
   fallbackReason?: string;
-}
-interface FieldProfile {
-  name: string;
-  type: string;
-  semantic?: string;
-  cardinality?: number;
-  nullRate?: number;
-  isTemporal?: boolean;
-  isGeo?: boolean;
-}
-interface Profile {
-  fields: FieldProfile[];
-  rowCount?: number;
 }
 interface PreviewResult {
   columns: string[];
@@ -56,19 +52,66 @@ export function App() {
   const [pg, setPg] = useState<PgForm>(EMPTY_PG);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [recommendation, setRecommendation] = useState<RecommendationResult | null>(null);
+  const [spec, setSpec] = useState<ChartSpec | null>(null);
+  const [computed, setComputed] = useState<ComputedChart | null>(null);
+  const [stats, setStats] = useState<SeriesStats | null>(null);
+
+  // Whenever the spec changes, recompute the chart.
+  useEffect(() => {
+    if (!spec || !preview) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/charts/compute", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ spec, profile: preview.profile, rows: preview.rows }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { message?: string } | null;
+          throw new Error(body?.message ?? `HTTP ${res.status}`);
+        }
+        const out = (await res.json()) as ComputedChart;
+        if (!cancelled) setComputed(out);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "compute failed");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [spec, preview]);
+
+  // Numeric series for the stats overlay (first measure, in row order).
+  const seriesValues = useMemo<{ values: number[]; labels?: string[] } | null>(() => {
+    if (!computed) return null;
+    const ySlot = Array.isArray(computed.spec.encoding.y)
+      ? computed.spec.encoding.y[0]
+      : computed.spec.encoding.y;
+    if (!ySlot) return null;
+    const yName = ySlot.label ?? (ySlot.agg && ySlot.field !== "*" ? `${ySlot.agg}_${ySlot.field}` : ySlot.agg === "count" ? "count" : ySlot.field);
+    const xName = computed.spec.encoding.x?.field;
+    const values: number[] = [];
+    const labels: string[] = [];
+    for (const r of computed.rows) {
+      const v = Number(r[yName] ?? r[ySlot.field]);
+      if (!Number.isFinite(v)) continue;
+      values.push(v);
+      if (xName) labels.push(String(r[xName]));
+    }
+    if (values.length === 0) return null;
+    return labels.length === values.length ? { values, labels } : { values };
+  }, [computed]);
 
   async function handleFileFlow() {
     if (!file) {
       setError("pick a CSV or XLSX file first");
       return;
     }
-    setBusy(true);
-    setError(null);
-    setPreview(null);
-    setRecommendation(null);
-    try {
+    await runFlow(async () => {
       const fd = new FormData();
       fd.append("file", file);
       const upRes = await fetch("/api/uploads", { method: "POST", body: fd });
@@ -90,21 +133,12 @@ export function App() {
       });
       if (!dsRes.ok) throw new Error(`dataset failed: HTTP ${dsRes.status}`);
       const ds = (await dsRes.json()) as { id: string };
-
-      await previewAndRecommend(ds.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "request failed");
-    } finally {
-      setBusy(false);
-    }
+      await previewRecommendEncode(ds.id);
+    });
   }
 
   async function handlePgFlow() {
-    setBusy(true);
-    setError(null);
-    setPreview(null);
-    setRecommendation(null);
-    try {
+    await runFlow(async () => {
       const port = Number.parseInt(pg.port, 10);
       if (!Number.isFinite(port)) throw new Error("port must be a number");
       const srcRes = await fetch("/api/sources", {
@@ -140,8 +174,20 @@ export function App() {
       });
       if (!dsRes.ok) throw new Error(`dataset failed: HTTP ${dsRes.status}`);
       const ds = (await dsRes.json()) as { id: string };
+      await previewRecommendEncode(ds.id);
+    });
+  }
 
-      await previewAndRecommend(ds.id);
+  async function runFlow(fn: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    setPreview(null);
+    setRecommendation(null);
+    setSpec(null);
+    setComputed(null);
+    setStats(null);
+    try {
+      await fn();
     } catch (e) {
       setError(e instanceof Error ? e.message : "request failed");
     } finally {
@@ -149,16 +195,13 @@ export function App() {
     }
   }
 
-  async function previewAndRecommend(datasetId: string) {
+  async function previewRecommendEncode(datasetId: string) {
     const pvRes = await fetch(`/api/datasets/${datasetId}/preview`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ limit: 1000 }),
+      body: JSON.stringify({ limit: 5000 }),
     });
-    if (!pvRes.ok) {
-      const body = (await pvRes.json().catch(() => null)) as { message?: string } | null;
-      throw new Error(body?.message ?? `preview failed: HTTP ${pvRes.status}`);
-    }
+    if (!pvRes.ok) throw new Error(`preview failed: HTTP ${pvRes.status}`);
     const pv = (await pvRes.json()) as PreviewResult;
     setPreview(pv);
 
@@ -168,41 +211,51 @@ export function App() {
       body: JSON.stringify(pv.profile),
     });
     if (!recRes.ok) throw new Error(`recommend failed: HTTP ${recRes.status}`);
-    setRecommendation((await recRes.json()) as RecommendationResult);
+    const rec = (await recRes.json()) as RecommendationResult;
+    setRecommendation(rec);
+
+    const top = rec.recommendations[0];
+    if (!top) throw new Error("no recommendations returned");
+    const aeRes = await fetch("/api/charts/auto-encode", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: pv.profile, chart: top.chart, maxMeasures: 4 }),
+    });
+    if (!aeRes.ok) throw new Error(`auto-encode failed: HTTP ${aeRes.status}`);
+    const initialSpec = (await aeRes.json()) as ChartSpec;
+    setSpec(initialSpec);
   }
 
   return (
     <main
       style={{
         fontFamily: "system-ui, sans-serif",
-        maxWidth: 960,
-        margin: "2rem auto",
+        maxWidth: 1200,
+        margin: "1.5rem auto",
         padding: "0 1rem",
       }}
     >
       <h1>Reports Generator</h1>
       <p style={{ color: "#555" }}>
-        Upload a CSV/XLSX or connect Postgres. The pipeline runs in
-        order: <em>upload → source → dataset → preview → recommend</em>.
-        All deterministic. AI is optional and disabled by default.
+        Upload a CSV/XLSX or connect Postgres. Pipeline:{" "}
+        <em>upload &rarr; source &rarr; dataset &rarr; preview &rarr;
+          recommend &rarr; auto-encode &rarr; render</em>. All deterministic.
+        AI optional, off by default.
       </p>
 
-      <fieldset style={{ marginTop: "1rem", padding: "1rem" }}>
+      <fieldset style={{ padding: "1rem" }}>
         <legend>Source</legend>
-
         <label style={{ marginRight: "1rem" }}>
           <input
             type="radio"
-            name="mode"
             checked={mode === "file"}
             onChange={() => setMode("file")}
           />{" "}
-          File (CSV / XLSX)
+          File (CSV/XLSX)
         </label>
         <label>
           <input
             type="radio"
-            name="mode"
             checked={mode === "postgres"}
             onChange={() => setMode("postgres")}
           />{" "}
@@ -210,14 +263,10 @@ export function App() {
         </label>
 
         {mode === "file" ? (
-          <div style={{ marginTop: "1rem" }}>
-            <input
-              type="file"
-              accept=".csv,.xlsx"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
+          <div style={{ marginTop: "0.75rem" }}>
+            <input type="file" accept=".csv,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
             <button
-              style={{ marginLeft: "1rem", padding: "0.4rem 0.8rem" }}
+              style={{ marginLeft: "1rem" }}
               disabled={busy || !file}
               onClick={() => void handleFileFlow()}
             >
@@ -225,79 +274,56 @@ export function App() {
             </button>
           </div>
         ) : (
-          <PostgresForm pg={pg} setPg={setPg} busy={busy} onSubmit={() => void handlePgFlow()} />
+          <PgForm pg={pg} setPg={setPg} busy={busy} onSubmit={() => void handlePgFlow()} />
         )}
-
-        {error && <p style={{ color: "crimson", marginTop: "1rem" }}>Error: {error}</p>}
+        {error && <p style={{ color: "crimson" }}>Error: {error}</p>}
       </fieldset>
 
-      {preview && (
+      {preview && recommendation && spec && (
         <section style={{ marginTop: "1.5rem" }}>
-          <h2>Profile</h2>
-          <p style={{ color: "#555" }}>
-            {preview.rows.length} rows
-            {preview.truncated ? " (truncated)" : ""} · {preview.columns.length} columns
-          </p>
-          <table style={profileTableStyle}>
-            <thead>
-              <tr>
-                {[
-                  "name",
-                  "type",
-                  "semantic",
-                  "cardinality",
-                  "null rate",
-                  "temporal",
-                  "geo",
-                ].map((h) => (
-                  <th key={h} style={cellStyle}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {preview.profile.fields.map((f) => (
-                <tr key={f.name}>
-                  <td style={cellStyle}>
-                    <code>{f.name}</code>
-                  </td>
-                  <td style={cellStyle}>{f.type}</td>
-                  <td style={cellStyle}>{f.semantic ?? ""}</td>
-                  <td style={cellStyle}>{f.cardinality ?? ""}</td>
-                  <td style={cellStyle}>
-                    {f.nullRate != null ? f.nullRate.toFixed(2) : ""}
-                  </td>
-                  <td style={cellStyle}>{f.isTemporal ? "yes" : ""}</td>
-                  <td style={cellStyle}>{f.isGeo ? "yes" : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
+          <ChartEditor
+            profile={preview.profile}
+            recommendations={recommendation.recommendations}
+            initialSpec={spec}
+            onChange={setSpec}
+          />
 
-      {recommendation && (
-        <section style={{ marginTop: "1.5rem" }}>
-          <h2>Recommended charts</h2>
-          <p style={{ color: "#555" }}>
-            <strong>source:</strong> {recommendation.source}
-            {recommendation.fallbackReason ? ` (${recommendation.fallbackReason})` : null}
-          </p>
-          <ol>
-            {recommendation.recommendations.map((r) => (
-              <li key={r.chart}>
-                <strong>{r.chart}</strong> — score {r.score.toFixed(2)} — {r.reason}
-              </li>
-            ))}
-          </ol>
+          {seriesValues && isTimeSeries(spec.chart) && (
+            <StatsOverlay
+              values={seriesValues.values}
+              labels={seriesValues.labels}
+              onStats={setStats}
+            />
+          )}
+
+          <div style={{ marginTop: "1rem", border: "1px solid #e5e7eb", padding: "0.5rem", borderRadius: 6 }}>
+            {computed ? (
+              <ChartRenderer computed={computed} stats={stats ?? undefined} height={420} />
+            ) : (
+              <p style={{ color: "#888" }}>Computing chart...</p>
+            )}
+          </div>
+
+          <Profile preview={preview} recommendation={recommendation} />
         </section>
       )}
     </main>
   );
 }
 
-function PostgresForm({
+function isTimeSeries(chart: string): boolean {
+  return [
+    "line",
+    "multi_line",
+    "area",
+    "stacked_area",
+    "step_line",
+    "sparkline",
+    "candlestick",
+  ].includes(chart);
+}
+
+function PgForm({
   pg,
   setPg,
   busy,
@@ -308,69 +334,94 @@ function PostgresForm({
   busy: boolean;
   onSubmit: () => void;
 }) {
-  const setField = <K extends keyof PgForm>(k: K, v: PgForm[K]) => setPg({ ...pg, [k]: v });
+  const set = <K extends keyof PgForm>(k: K, v: PgForm[K]) => setPg({ ...pg, [k]: v });
   return (
-    <div style={{ marginTop: "1rem", display: "grid", gap: "0.5rem", maxWidth: 520 }}>
-      <Row label="host">
-        <input value={pg.host} onChange={(e) => setField("host", e.target.value)} />
-      </Row>
-      <Row label="port">
-        <input value={pg.port} onChange={(e) => setField("port", e.target.value)} />
-      </Row>
-      <Row label="database">
-        <input value={pg.database} onChange={(e) => setField("database", e.target.value)} />
-      </Row>
-      <Row label="user">
-        <input value={pg.user} onChange={(e) => setField("user", e.target.value)} />
-      </Row>
-      <Row label="password">
-        <input
-          type="password"
-          value={pg.password}
-          onChange={(e) => setField("password", e.target.value)}
-        />
-      </Row>
-      <Row label="ssl">
-        <input
-          type="checkbox"
-          checked={pg.ssl}
-          onChange={(e) => setField("ssl", e.target.checked)}
-        />
-      </Row>
-      <Row label="query">
+    <div style={{ marginTop: "0.75rem", display: "grid", gap: "0.4rem", maxWidth: 520 }}>
+      {(["host", "port", "database", "user"] as const).map((k) => (
+        <label
+          key={k}
+          style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "0.5rem", alignItems: "center" }}
+        >
+          <span>{k}</span>
+          <input value={pg[k] as string} onChange={(e) => set(k, e.target.value)} />
+        </label>
+      ))}
+      <label style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "0.5rem", alignItems: "center" }}>
+        <span>password</span>
+        <input type="password" value={pg.password} onChange={(e) => set("password", e.target.value)} />
+      </label>
+      <label style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "0.5rem", alignItems: "center" }}>
+        <span>ssl</span>
+        <input type="checkbox" checked={pg.ssl} onChange={(e) => set("ssl", e.target.checked)} />
+      </label>
+      <label style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "0.5rem", alignItems: "center" }}>
+        <span>query</span>
         <textarea
           rows={3}
-          style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+          style={{ fontFamily: "ui-monospace, monospace" }}
           value={pg.query}
-          onChange={(e) => setField("query", e.target.value)}
+          onChange={(e) => set("query", e.target.value)}
         />
-      </Row>
-      <button
-        style={{ marginTop: "0.5rem", padding: "0.4rem 0.8rem", justifySelf: "start" }}
-        disabled={busy}
-        onClick={onSubmit}
-      >
+      </label>
+      <button disabled={busy} onClick={onSubmit} style={{ justifySelf: "start", marginTop: "0.5rem" }}>
         {busy ? "Working..." : "Connect & Recommend"}
       </button>
     </div>
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Profile({
+  preview,
+  recommendation,
+}: {
+  preview: PreviewResult;
+  recommendation: RecommendationResult;
+}) {
   return (
-    <label style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "0.5rem", alignItems: "center" }}>
-      <span>{label}</span>
-      <span>{children}</span>
-    </label>
+    <details style={{ marginTop: "1rem" }}>
+      <summary>Profile + recommendations ({preview.rows.length} rows)</summary>
+      <table style={{ borderCollapse: "collapse", marginTop: "0.5rem", fontSize: 13 }}>
+        <thead>
+          <tr>
+            {["name", "type", "semantic", "cardinality", "null", "temporal", "geo"].map((h) => (
+              <th key={h} style={cell}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {preview.profile.fields.map((f) => (
+            <tr key={f.name}>
+              <td style={cell}>
+                <code>{f.name}</code>
+              </td>
+              <td style={cell}>{f.type}</td>
+              <td style={cell}>{f.semantic ?? ""}</td>
+              <td style={cell}>{f.cardinality ?? ""}</td>
+              <td style={cell}>{f.nullRate != null ? f.nullRate.toFixed(2) : ""}</td>
+              <td style={cell}>{f.isTemporal ? "yes" : ""}</td>
+              <td style={cell}>{f.isGeo ? "yes" : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ marginTop: "0.75rem", color: "#555" }}>
+        recommend source: {recommendation.source}
+        {recommendation.fallbackReason ? ` (${recommendation.fallbackReason})` : ""}
+      </p>
+      <ol>
+        {recommendation.recommendations.map((r) => (
+          <li key={r.chart}>
+            <strong>{r.chart}</strong> &mdash; {r.score.toFixed(2)} &mdash; {r.reason}
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
-const profileTableStyle: React.CSSProperties = {
-  borderCollapse: "collapse",
-  marginTop: "0.5rem",
-  fontSize: 14,
-};
-const cellStyle: React.CSSProperties = {
+const cell: React.CSSProperties = {
   border: "1px solid #ddd",
   padding: "0.25rem 0.5rem",
   textAlign: "left",
