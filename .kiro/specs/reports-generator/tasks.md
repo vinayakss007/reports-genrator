@@ -16,11 +16,21 @@ Phases are sequential; tasks within a phase can be parallelized.
 
 ## Phase 1 — Core data plane
 
-- Source connectors: Postgres, CSV, XLSX.
-- Schema profiler with type, cardinality, null rate, monotonic-time,
-  PK candidate detection.
-- Dataset preview API and UI.
-- Encrypted secret storage for source credentials.
+- [x] Source connectors: Postgres, CSV, XLSX. Real implementations
+      using `pg`, `papaparse`, and `exceljs`.
+- [x] Schema profiler with type, cardinality, null rate, monotonic-time,
+      PK candidate detection. Pure deterministic functions in
+      `packages/core/src/profile/`.
+- [x] Dataset preview API (`POST /datasets/:id/preview`) returning
+      rows + computed profile. Output is exactly the shape consumed
+      by `POST /recommend-chart`.
+- [x] Encrypted secret storage for source credentials using
+      XChaCha20-Poly1305 with a per-data-dir key (or
+      `STORAGE_ENCRYPTION_KEY` env override).
+- [x] File uploads via `@fastify/multipart` (`POST /uploads`),
+      stored at `${DATA_DIR}/uploads/<id>.<ext>` with 0600 perms.
+- [x] Web UI: single workflow page that runs the full pipeline —
+      upload (or PG connect) → source → dataset → preview → recommend.
 
 ## Phase 2 — Deterministic chart engine
 

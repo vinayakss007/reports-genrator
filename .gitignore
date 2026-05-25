@@ -10,6 +10,9 @@ coverage/
 .env.*
 !.env.example
 
+# Runtime data: uploads, store.json, dev encryption key
+data/
+
 .DS_Store
 .idea/
 .vscode/
