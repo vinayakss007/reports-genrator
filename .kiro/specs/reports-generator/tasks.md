@@ -121,28 +121,27 @@ Phases are sequential; tasks within a phase can be parallelized.
 
 ## Phase 7 — Hardening
 
-- [x] Tests: vitest workspace at root with 53 unit tests across the
-      deterministic engine, AI gateway fallback discipline, and
-      exports writers. `pnpm test` runs in well under a second.
+- [x] Tests: vitest workspace at root with **58 unit tests** across the
+      deterministic engine, AI gateway fallback discipline, exports
+      writers, and tenant isolation.
 - [x] Audit log: append-only JSONL at `${DATA_DIR}/audit.log` with
-      0600 perms. Records `auth.register`, `auth.login`,
-      `auth.login_failed`, and every non-GET request after it
-      completes (method, path, status, principal, ip).
-- [x] Rate limiting: `@fastify/rate-limit` (default 300 req/min,
-      configurable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW`).
-- [x] Authentication: `@fastify/jwt` with `bcryptjs` password hashes.
-      `loadJwtSecret` reads `JWT_SECRET` or generates a 64-byte dev
-      secret at `${DATA_DIR}/.jwt-secret` 0600 with a loud warning.
-      Routes: `POST /auth/register`, `POST /auth/login`,
-      `GET /auth/me`. Roles: owner/editor/viewer with a comparison
-      ladder for `requireRole(min)`.
-- [x] AUTH_REQUIRED env flag: when `false` (default) the API runs in
-      single-user dev mode unchanged; when `true`, every route
-      except `/health` and `/auth/*` requires a valid JWT.
-- Multi-tenant `org_id` enforcement at the storage layer is
-  deferred. The mechanism is in place (every authenticated request
-  has `req.principal.orgId`); rolling that out across every query
-  in sources/datasets/dashboards/schedules is a contained migration
-  that belongs in its own PR.
-- KMS / secret rotation — out of scope for this PR; the existing
-  `STORAGE_ENCRYPTION_KEY` and `JWT_SECRET` env vars are the seam.
+      0600 perms. Records auth events and every non-GET request.
+- [x] Rate limiting: `@fastify/rate-limit` (default 300 req/min).
+- [x] Authentication: `@fastify/jwt` with `bcryptjs` cost-10 hashes,
+      JWT secret persisted at `${DATA_DIR}/.jwt-secret` (or via
+      `JWT_SECRET` env). Routes: `POST /auth/register`,
+      `POST /auth/login`, `GET /auth/me`. Roles: owner/editor/viewer.
+- [x] AUTH_REQUIRED env flag toggles enforcement on every route
+      except `/health` and `/auth/*`.
+- [x] **Multi-tenant org_id rollout**: every Stored* record carries
+      an `orgId`. JsonStore migrates v1/v2/v3 → v4 by assigning
+      orphan records to a default org. `Storage.forOrg(orgId)`
+      returns a `TenantStorage` whose every list/get/create/delete
+      is org-scoped; cross-org access returns null/false. Routes
+      use a `TenantResolver` that takes `req.principal.orgId`
+      under AUTH_REQUIRED, otherwise the boot-time default org.
+      Scheduler reads `orgId` from each schedule and runs inside
+      `storage.forOrg(orgId)`. Five tenant-isolation tests verify
+      the boundary (incl. v3 → v4 migration).
+- KMS / secret rotation — `JWT_SECRET` and `STORAGE_ENCRYPTION_KEY`
+  env vars are the swap seam; KMS adapter is a follow-up.

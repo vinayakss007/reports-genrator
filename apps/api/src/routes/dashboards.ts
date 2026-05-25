@@ -5,21 +5,20 @@ import {
   UpdateDashboardRequestSchema,
   type Tile,
 } from "@reports/shared";
-import type { Storage, StoredDashboard, StoredTile, StoredParameter } from "@reports/storage";
+import type { StoredDashboard, StoredTile, StoredParameter } from "@reports/storage";
+import type { TenantResolver } from "../tenant.js";
 
 /**
- * Dashboards CRUD.
- *
- * Tiles and parameters are validated by the shared Zod schemas; the
- * server stores them as opaque blobs and re-validates on the way out
- * if a downstream needs strict shapes.
+ * Dashboards CRUD. All operations go through TenantStorage so a user
+ * can only see, edit, or delete dashboards inside their own org.
  */
-export function registerDashboardRoutes(app: FastifyInstance, storage: Storage): void {
+export function registerDashboardRoutes(app: FastifyInstance, tenants: TenantResolver): void {
   app.post("/dashboards", async (req, reply) => {
     const parsed = CreateDashboardRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
+    const tenant = tenants.for(req);
     const tiles: StoredTile[] = (parsed.data.tiles ?? []).map((t) => ({
       ...t,
       id: randomUUID(),
@@ -30,7 +29,7 @@ export function registerDashboardRoutes(app: FastifyInstance, storage: Storage):
       op: p.op,
       value: p.value ?? null,
     }));
-    const created = await storage.createDashboard({
+    const created = await tenant.createDashboard({
       name: parsed.data.name,
       parameters,
       tiles,
@@ -38,10 +37,10 @@ export function registerDashboardRoutes(app: FastifyInstance, storage: Storage):
     return reply.code(201).send(created);
   });
 
-  app.get("/dashboards", async () => storage.listDashboards());
+  app.get("/dashboards", async (req) => tenants.for(req).listDashboards());
 
   app.get<{ Params: { id: string } }>("/dashboards/:id", async (req, reply) => {
-    const d = await storage.getDashboard(req.params.id);
+    const d = await tenants.for(req).getDashboard(req.params.id);
     if (!d) return reply.code(404).send({ error: "not_found" });
     return d;
   });
@@ -51,7 +50,6 @@ export function registerDashboardRoutes(app: FastifyInstance, storage: Storage):
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
-    // For PUT we keep tile ids stable: any tile in the body without an id gets one.
     const tiles: StoredTile[] | undefined = parsed.data.tiles?.map((t: Tile) => ({
       ...t,
       id: t.id ?? randomUUID(),
@@ -68,13 +66,13 @@ export function registerDashboardRoutes(app: FastifyInstance, storage: Storage):
     if (parameters !== undefined) patch.parameters = parameters;
     if (tiles !== undefined) patch.tiles = tiles;
 
-    const updated = await storage.updateDashboard(req.params.id, patch);
+    const updated = await tenants.for(req).updateDashboard(req.params.id, patch);
     if (!updated) return reply.code(404).send({ error: "not_found" });
     return updated;
   });
 
   app.delete<{ Params: { id: string } }>("/dashboards/:id", async (req, reply) => {
-    const ok = await storage.deleteDashboard(req.params.id);
+    const ok = await tenants.for(req).deleteDashboard(req.params.id);
     if (!ok) return reply.code(404).send({ error: "not_found" });
     return reply.code(204).send();
   });

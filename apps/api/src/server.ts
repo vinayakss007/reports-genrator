@@ -17,6 +17,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { Scheduler } from "./scheduler.js";
 import { AuditLog, defaultAuditLogPath } from "./audit.js";
 import { registerAuth } from "./auth.js";
+import { createTenantResolver, resolveDefaultOrgId } from "./tenant.js";
 
 const PORT = Number.parseInt(process.env.API_PORT ?? "3001", 10);
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
@@ -28,33 +29,35 @@ export async function buildServer() {
   const audit = new AuditLog(defaultAuditLogPath(DATA_DIR));
   await audit.open();
 
+  // Resolve a default org id once at boot so dev-mode requests
+  // (AUTH_REQUIRED=false) have a stable tenant.
+  const defaultOrgId = await resolveDefaultOrgId(storage);
+  const tenants = createTenantResolver(storage, defaultOrgId);
+
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
   await app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
   });
-
   await app.register(multipart, {
     limits: { fileSize: 50 * 1024 * 1024 },
   });
-
   await app.register(rateLimit, {
     max: RATE_LIMIT_MAX,
     timeWindow: RATE_LIMIT_WINDOW,
   });
 
-  // Auth (mode controlled by AUTH_REQUIRED env, default false).
   const auth = await registerAuth(app, { storage, dataDir: DATA_DIR });
 
-  // Audit hook: log every mutating request after it completes.
+  // Audit hook: every non-GET request after it completes.
   app.addHook("onResponse", async (req, reply) => {
     const m = req.method.toUpperCase();
     if (m === "GET" || m === "HEAD" || m === "OPTIONS") return;
-    if (req.url === "/auth/login" || req.url === "/auth/register") return; // handled inline
+    if (req.url === "/auth/login" || req.url === "/auth/register") return;
     audit.write({
       event: "http.request",
       userId: req.principal?.userId ?? null,
-      orgId: req.principal?.orgId ?? null,
+      orgId: req.principal?.orgId ?? defaultOrgId,
       method: m,
       path: req.url.split("?")[0]!,
       status: reply.statusCode,
@@ -62,7 +65,6 @@ export async function buildServer() {
     });
   });
 
-  // Public route: liveness.
   app.get("/health", async () => ({
     status: "ok",
     aiEnabled: (process.env.AI_ENABLED ?? "false").toLowerCase() === "true",
@@ -70,10 +72,9 @@ export async function buildServer() {
     dataDir: DATA_DIR,
   }));
 
-  // Public auth routes.
   registerAuthRoutes(app, storage, audit);
 
-  // All remaining routes go through requireAuth (no-op when AUTH_REQUIRED=false).
+  // Auth gate on every other route when AUTH_REQUIRED=true.
   app.addHook("onRequest", async (req, reply) => {
     if (!auth.required) return;
     const p = req.url.split("?")[0]!;
@@ -81,7 +82,6 @@ export async function buildServer() {
     await auth.requireAuth(req, reply);
   });
 
-  // Recommend.
   app.post("/recommend-chart", async (req, reply) => {
     const parsed = ProfileSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -90,19 +90,14 @@ export async function buildServer() {
     return reply.send(await recommendChart(parsed.data));
   });
 
-  // Phase 1: data plane.
-  registerUploadRoutes(app, storage);
-  registerSourceRoutes(app, storage);
-  registerDatasetRoutes(app, storage);
-
-  // Phase 2/4/6: chart compute + stats.
-  registerChartRoutes(app, storage);
-
-  // Phase 3: dashboards, exports, schedules.
-  registerDashboardRoutes(app, storage);
-  registerExportRoutes(app, storage);
+  registerUploadRoutes(app, tenants);
+  registerSourceRoutes(app, tenants);
+  registerDatasetRoutes(app, tenants);
+  registerChartRoutes(app, tenants);
+  registerDashboardRoutes(app, tenants);
+  registerExportRoutes(app, tenants);
   const scheduler = new Scheduler(storage, app.log);
-  registerScheduleRoutes(app, storage, scheduler);
+  registerScheduleRoutes(app, tenants, scheduler);
   await scheduler.start();
 
   app.addHook("onClose", async () => {

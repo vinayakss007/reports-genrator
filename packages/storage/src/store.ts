@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { SealedSecret } from "./crypto.js";
 import type {
   StoredDashboard,
@@ -25,7 +26,7 @@ import type {
  */
 
 interface DiskShape {
-  version: 3;
+  version: 4;
   sources: StoredSource[];
   datasets: StoredDataset[];
   uploads: StoredUpload[];
@@ -37,7 +38,7 @@ interface DiskShape {
 }
 
 const EMPTY: DiskShape = {
-  version: 3,
+  version: 4,
   sources: [],
   datasets: [],
   uploads: [],
@@ -63,19 +64,22 @@ export class JsonStore {
       const parsed = JSON.parse(raw) as { version?: number } & Record<string, unknown>;
       if (!parsed) throw new Error("empty store");
       const version = parsed.version;
-      if (version === 1 || version === 2) {
-        // Migrate forward: ensure every collection exists.
-        this.state = {
+      if (version === 1 || version === 2 || version === 3) {
+        // Migrate forward: ensure every collection exists, then assign
+        // orgIds to any orphan records (multi-tenant rollout).
+        const partial = {
           ...EMPTY,
           ...(parsed as object),
-          version: 3,
+          version: 4,
           dashboards: (parsed.dashboards as StoredDashboard[]) ?? [],
           schedules: (parsed.schedules as StoredSchedule[]) ?? [],
-          orgs: [],
-          users: [],
+          orgs: (parsed.orgs as StoredOrg[]) ?? [],
+          users: (parsed.users as StoredUser[]) ?? [],
         } as DiskShape;
+        backfillOrgIds(partial);
+        this.state = partial;
         await this.persist(this.state);
-      } else if (version === 3) {
+      } else if (version === 4) {
         this.state = parsed as unknown as DiskShape;
       } else {
         throw new Error(`unsupported store version: ${version ?? "missing"}`);
@@ -112,4 +116,39 @@ export class JsonStore {
     await fs.writeFile(tmp, json, { encoding: "utf8" });
     await fs.rename(tmp, this.path);
   }
+}
+
+/**
+ * v3 -> v4 migration: every record gains an `orgId`. Orphan records
+ * (created before auth was on) are assigned to a "default" org which
+ * we create lazily if no orgs exist yet. This is a real migration and
+ * persists immediately.
+ */
+function backfillOrgIds(state: DiskShape): void {
+  let defaultOrgId: string | null = null;
+  const ensure = (): string => {
+    if (defaultOrgId) return defaultOrgId;
+    if (state.orgs.length > 0) {
+      defaultOrgId = state.orgs[0]!.id;
+      return defaultOrgId;
+    }
+    const fresh: StoredOrg = {
+      id: randomUUID(),
+      name: "default",
+      createdAt: new Date().toISOString(),
+    };
+    state.orgs.push(fresh);
+    defaultOrgId = fresh.id;
+    return defaultOrgId;
+  };
+  const tag = <T extends { orgId?: string }>(items: T[]): void => {
+    for (const r of items) {
+      if (!r.orgId) (r as T & { orgId: string }).orgId = ensure();
+    }
+  };
+  tag(state.sources);
+  tag(state.datasets);
+  tag(state.uploads);
+  tag(state.dashboards);
+  tag(state.schedules);
 }

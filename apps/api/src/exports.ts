@@ -1,29 +1,20 @@
 import { writeCsv, writeXlsx, writeJson, EXPORT_EXTENSION, EXPORT_MIME } from "@reports/exports";
 import type { ChartSpec, ExportFormat, ExportTarget } from "@reports/shared";
-import type { Storage, StoredDashboard } from "@reports/storage";
+import type { StoredDashboard, TenantStorage } from "@reports/storage";
 import type { Writable } from "node:stream";
 import { runPreview } from "./preview.js";
 import { computeChart } from "./charts.js";
 
 /**
- * Export pipeline.
- *
- * Resolves an ExportTarget to one or more rectangular row sets,
- * writes them to `out` in the requested format, and returns the
- * suggested filename. All deterministic; no AI involved.
- *
- *   - dataset target: read up to `limit` rows via the connector. Use
- *                     the dataset's own column order. CSV/XLSX/JSON.
- *   - chart target:   resolve the dataset, apply the spec via
- *                     computeChart, write the aggregated rows.
- *   - dashboard:      resolve every tile to a sheet (XLSX) or a
- *                     single concatenated CSV/JSON keyed by tile.
+ * Export pipeline. Driven by a TenantStorage so every dataset/source/
+ * dashboard lookup is org-scoped. Cross-tenant access surfaces as
+ * "not found", not "forbidden".
  */
 export interface ExportContext {
   out: Writable;
   format: ExportFormat;
   target: ExportTarget;
-  storage: Storage;
+  tenant: TenantStorage;
 }
 
 export interface ExportResult {
@@ -36,12 +27,12 @@ export async function runExport(ctx: ExportContext): Promise<ExportResult> {
   const mime = EXPORT_MIME[ctx.format];
 
   if (ctx.target.kind === "dataset") {
-    const ds = await ctx.storage.getDataset(ctx.target.datasetId);
+    const ds = await ctx.tenant.getDataset(ctx.target.datasetId);
     if (!ds) throw notFound("dataset_not_found");
-    const src = await ctx.storage.getSource(ds.sourceId);
+    const src = await ctx.tenant.getSource(ds.sourceId);
     if (!src) throw notFound("source_not_found");
     const limit = ctx.target.limit ?? 100_000;
-    const pv = await runPreview(ctx.storage, src, ds, limit);
+    const pv = await runPreview(ctx.tenant, src, ds, limit);
     await write(ctx.format, ctx.out, [
       { name: ds.name.slice(0, 31), columns: pv.columns, rows: pv.rows },
     ]);
@@ -49,11 +40,11 @@ export async function runExport(ctx: ExportContext): Promise<ExportResult> {
   }
 
   if (ctx.target.kind === "chart") {
-    const ds = await ctx.storage.getDataset(ctx.target.datasetId);
+    const ds = await ctx.tenant.getDataset(ctx.target.datasetId);
     if (!ds) throw notFound("dataset_not_found");
-    const src = await ctx.storage.getSource(ds.sourceId);
+    const src = await ctx.tenant.getSource(ds.sourceId);
     if (!src) throw notFound("source_not_found");
-    const pv = await runPreview(ctx.storage, src, ds, 100_000);
+    const pv = await runPreview(ctx.tenant, src, ds, 100_000);
     const computed = computeChart(pv.rows, ctx.target.spec as ChartSpec);
     await write(ctx.format, ctx.out, [
       { name: ds.name.slice(0, 31), columns: computed.columns, rows: computed.rows },
@@ -62,19 +53,18 @@ export async function runExport(ctx: ExportContext): Promise<ExportResult> {
   }
 
   // dashboard
-  const dash = await ctx.storage.getDashboard(ctx.target.dashboardId);
+  const dash = await ctx.tenant.getDashboard(ctx.target.dashboardId);
   if (!dash) throw notFound("dashboard_not_found");
-  const sheets = await dashboardToSheets(ctx.storage, dash);
+  const sheets = await dashboardToSheets(ctx.tenant, dash);
   await write(ctx.format, ctx.out, sheets);
   return { filename: `${slug(dash.name)}.${ext}`, contentType: mime };
 }
 
 async function dashboardToSheets(
-  storage: Storage,
+  tenant: TenantStorage,
   dashboard: StoredDashboard,
 ): Promise<Array<{ name: string; columns: string[]; rows: Record<string, unknown>[] }>> {
   const sheets: Array<{ name: string; columns: string[]; rows: Record<string, unknown>[] }> = [];
-  // Convert dashboard parameters into filter rows merged into each tile spec.
   type SpecFilter = NonNullable<ChartSpec["filters"]>[number];
   const paramFilters: SpecFilter[] = dashboard.parameters
     .filter((p) => p.value !== null && p.value !== undefined && p.value !== "")
@@ -96,11 +86,11 @@ async function dashboardToSheets(
 
   for (let i = 0; i < dashboard.tiles.length; i++) {
     const tile = dashboard.tiles[i]!;
-    const ds = await storage.getDataset(tile.datasetId);
+    const ds = await tenant.getDataset(tile.datasetId);
     if (!ds) continue;
-    const src = await storage.getSource(ds.sourceId);
+    const src = await tenant.getSource(ds.sourceId);
     if (!src) continue;
-    const pv = await runPreview(storage, src, ds, 100_000);
+    const pv = await runPreview(tenant, src, ds, 100_000);
     const spec = tile.spec as ChartSpec;
     const merged: ChartSpec = {
       ...spec,
@@ -130,7 +120,6 @@ async function write(
       await writeCsv(sheets[0]!.rows, sheets[0]!.columns, out);
       return;
     }
-    // For multi-sheet CSV, concatenate with a sheet header line.
     for (let i = 0; i < sheets.length; i++) {
       const s = sheets[i]!;
       const sep = i === 0 ? "" : "\r\n";

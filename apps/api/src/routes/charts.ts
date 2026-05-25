@@ -10,62 +10,46 @@ import {
   pickColors,
   decompose,
 } from "@reports/core";
-import type { Storage } from "@reports/storage";
+import type { TenantResolver } from "../tenant.js";
 import { runPreview } from "../preview.js";
 import { computeChart } from "../charts.js";
 
 /**
- * Chart computation routes.
- *
- *   POST /charts/auto-encode  - given a Profile + chart, return a
- *       deterministic ChartSpec by filling encoding slots.
- *   POST /charts/compute      - apply a ChartSpec (filters + aggregate)
- *       to provided rows, return shaped rows + computed colors.
- *   POST /charts/series-stats - run STL + anomaly + Holt-Winters on a
- *       numeric series. Used for time-series overlays in the renderer.
- *
- * All deterministic. AI never touches these paths.
+ * Chart computation routes. All dataset resolution is org-scoped.
  */
-export function registerChartRoutes(app: FastifyInstance, storage: Storage): void {
+export function registerChartRoutes(app: FastifyInstance, tenants: TenantResolver): void {
   app.post("/charts/auto-encode", async (req, reply) => {
     const body = req.body as {
       profile?: unknown;
       chart?: ChartType;
       maxMeasures?: number;
     };
-    if (!body || !body.chart) {
-      return reply.code(400).send({ error: "missing_chart" });
-    }
+    if (!body || !body.chart) return reply.code(400).send({ error: "missing_chart" });
     const profile = body.profile as Parameters<typeof autoEncode>[0];
-    if (!profile?.fields) {
-      return reply.code(400).send({ error: "missing_profile" });
-    }
+    if (!profile?.fields) return reply.code(400).send({ error: "missing_profile" });
     return reply.send(autoEncode(profile, body.chart, { maxMeasures: body.maxMeasures }));
   });
 
   app.post("/charts/compute", async (req, reply) => {
     const parsed = ChartComputeRequestSchema.safeParse(req.body);
     if (!parsed.success) {
-      return reply
-        .code(400)
-        .send({ error: "invalid_body", issues: parsed.error.issues });
+      return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
+    const tenant = tenants.for(req);
     const { spec, rows } = parsed.data;
 
     let resolvedRows = rows;
-    // Optional: if a datasetId was passed AND rows is empty, resolve.
     if (parsed.data.datasetId && resolvedRows.length === 0) {
-      const ds = await storage.getDataset(parsed.data.datasetId);
+      const ds = await tenant.getDataset(parsed.data.datasetId);
       if (!ds) return reply.code(404).send({ error: "dataset_not_found" });
-      const src = await storage.getSource(ds.sourceId);
+      const src = await tenant.getSource(ds.sourceId);
       if (!src) return reply.code(404).send({ error: "source_not_found" });
-      const pv = await runPreview(storage, src, ds, 10_000);
+      const pv = await runPreview(tenant, src, ds, 10_000);
       resolvedRows = pv.rows;
     }
 
     const computed = computeChart(resolvedRows, spec);
 
-    // Deterministic colors keyed by the color encoding's distinct values.
     const enc = spec.encoding;
     let colors: string[] = [];
     if (enc.color && !enc.color.agg) {
@@ -79,8 +63,8 @@ export function registerChartRoutes(app: FastifyInstance, storage: Storage): voi
     return reply.send({ ...computed, colors, spec });
   });
 
-  app.post("/charts/series-stats", async (req, reply) => {
-    const body = req.body as {
+  app.post("/charts/series-stats", async (_req, reply) => {
+    const body = _req.body as {
       values?: number[];
       labels?: string[];
       period?: number;

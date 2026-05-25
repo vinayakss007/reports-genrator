@@ -1,4 +1,4 @@
-export { Storage } from "./repos.js";
+export { Storage, TenantStorage } from "./repos.js";
 export type {
   StoredSource,
   StoredDataset,

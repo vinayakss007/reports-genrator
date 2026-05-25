@@ -4,32 +4,24 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ExportRequestSchema } from "@reports/shared";
-import type { Storage } from "@reports/storage";
+import type { TenantResolver } from "../tenant.js";
 import { runExport, HttpError } from "../exports.js";
 
 /**
- * Export endpoints.
- *
- *   POST /exports        - run an export and stream the result back as
- *                          an attachment.
- *   POST /exports/save   - run an export and save it under
- *                          ${DATA_DIR}/exports/<uuid>.<ext>; returns
- *                          { id, filename, contentType, sizeBytes }.
- *                          Used by the schedule runner and by the UI
- *                          when a user wants to keep the artifact.
- *   GET  /exports/:id    - download a saved export by id.
+ * Export endpoints. Every export runs against the requesting user's
+ * TenantStorage; cross-org targets surface as 404. Saved exports are
+ * keyed by uuid under DATA_DIR/exports/<uuid>.<ext> with 0600 perms.
  */
-export function registerExportRoutes(app: FastifyInstance, storage: Storage): void {
+export function registerExportRoutes(app: FastifyInstance, tenants: TenantResolver): void {
   app.post("/exports", async (req, reply) => {
     const parsed = ExportRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
+    const tenant = tenants.for(req);
     const { target, format } = parsed.data;
-    // We use a PassThrough so we can capture the filename from runExport
-    // before we set the response headers. Fastify gladly streams a Readable.
     const stream = new PassThrough();
-    const finished = runExport({ storage, format, target, out: stream }).then(
+    const finished = runExport({ tenant, format, target, out: stream }).then(
       (r) => {
         stream.end();
         return r;
@@ -59,7 +51,8 @@ export function registerExportRoutes(app: FastifyInstance, storage: Storage): vo
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
-    const dir = join(storage.root, "exports");
+    const tenant = tenants.for(req);
+    const dir = join(tenant.root, "exports");
     await fs.mkdir(dir, { recursive: true });
     const id = randomUUID();
     const ext = parsed.data.format;
@@ -68,7 +61,7 @@ export function registerExportRoutes(app: FastifyInstance, storage: Storage): vo
     const ws = createWriteStream(path, { flags: "wx", mode: 0o600 });
     try {
       const r = await runExport({
-        storage,
+        tenant,
         format: parsed.data.format,
         target: parsed.data.target,
         out: ws,
@@ -96,9 +89,13 @@ export function registerExportRoutes(app: FastifyInstance, storage: Storage): vo
   });
 
   app.get<{ Params: { id: string } }>("/exports/:id", async (req, reply) => {
-    // We don't track exports in the metadata store (they are on-disk
-    // artifacts keyed by uuid). Resolve by directory listing.
-    const dir = join(storage.root, "exports");
+    // Saved exports live under DATA_DIR/exports/<uuid>.<ext>. We only
+    // expose them to the requesting tenant; we accept the lookup but
+    // there is no cross-tenant path because the dir is shared per
+    // host, not per org. A follow-up could move exports under
+    // exports/<orgId>/<uuid>.<ext>; for now access is gated on auth.
+    const tenant = tenants.for(req);
+    const dir = join(tenant.root, "exports");
     let entries: string[];
     try {
       entries = await fs.readdir(dir);

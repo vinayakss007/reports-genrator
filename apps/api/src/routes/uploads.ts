@@ -3,40 +3,33 @@ import { join, basename } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { Storage } from "@reports/storage";
+import type { TenantResolver } from "../tenant.js";
 
-const MAX_BYTES = 50 * 1024 * 1024; // 50 MB v1 cap
+const MAX_BYTES = 50 * 1024 * 1024;
 
 /**
- * Multipart-file uploads.
- *
- *   POST /uploads        - upload a single CSV or XLSX file
- *   GET  /uploads        - list uploads (no file contents)
- *
- * The file is streamed straight to its final on-disk name
- * `${DATA_DIR}/uploads/<id>.<ext>` so we never keep two copies. The
- * upload record is written to the metadata store after a successful
- * write; on any failure the partial file is unlinked and no record is
- * created.
+ * Multipart-file uploads. Files land under `${DATA_DIR}/uploads/<id>.
+ * <ext>` 0600. The upload record carries the requesting user's orgId
+ * so it is only visible to that tenant on subsequent reads.
  */
-export function registerUploadRoutes(app: FastifyInstance, storage: Storage): void {
+export function registerUploadRoutes(app: FastifyInstance, tenants: TenantResolver): void {
   app.post("/uploads", async (req, reply) => {
+    const tenant = tenants.for(req);
     const data = await req.file({ limits: { fileSize: MAX_BYTES } });
     if (!data) return reply.code(400).send({ error: "missing_file" });
 
     const filename = basename(data.filename ?? "upload");
     const ext = filename.toLowerCase().split(".").pop();
     if (ext !== "csv" && ext !== "xlsx") {
-      data.file.resume(); // drain so the connection closes cleanly
+      data.file.resume();
       return reply.code(415).send({
         error: "unsupported_extension",
         message: `only .csv and .xlsx are supported, got .${ext ?? "?"}`,
       });
     }
 
-    const uploadDir = join(storage.root, "uploads");
+    const uploadDir = join(tenant.root, "uploads");
     await fs.mkdir(uploadDir, { recursive: true });
-
     const id = randomUUID();
     const finalPath = join(uploadDir, `${id}.${ext}`);
     let bytes = 0;
@@ -54,7 +47,6 @@ export function registerUploadRoutes(app: FastifyInstance, storage: Storage): vo
         message: (err as Error).message,
       });
     }
-
     if (data.file.truncated) {
       await fs.unlink(finalPath).catch(() => undefined);
       return reply.code(413).send({
@@ -63,13 +55,12 @@ export function registerUploadRoutes(app: FastifyInstance, storage: Storage): vo
       });
     }
 
-    const upload = await storage.createUploadWithId(id, {
+    const upload = await tenant.createUploadWithId(id, {
       filename,
       size: bytes,
       kind: ext as "csv" | "xlsx",
       path: finalPath,
     });
-
     return reply.code(201).send({
       id: upload.id,
       filename: upload.filename,
@@ -79,8 +70,8 @@ export function registerUploadRoutes(app: FastifyInstance, storage: Storage): vo
     });
   });
 
-  app.get("/uploads", async () => {
-    const uploads = await storage.listUploads();
+  app.get("/uploads", async (req) => {
+    const uploads = await tenants.for(req).listUploads();
     return uploads.map((u) => ({
       id: u.id,
       filename: u.filename,

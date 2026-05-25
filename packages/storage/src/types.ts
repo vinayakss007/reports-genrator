@@ -3,6 +3,8 @@ import type { SourceKind } from "@reports/shared";
 /** On-disk Source record. Secrets are kept out and stored separately. */
 export interface StoredSource {
   id: string;
+  /** Owning tenant. Every record is scoped to an Org. */
+  orgId: string;
   kind: SourceKind;
   name: string;
   createdAt: string;
@@ -21,6 +23,8 @@ export interface StoredSource {
 /** On-disk Dataset record. A view over a Source. */
 export interface StoredDataset {
   id: string;
+  /** Owning tenant. Must match the parent Source's orgId. */
+  orgId: string;
   sourceId: string;
   name: string;
   createdAt: string;
@@ -33,6 +37,8 @@ export interface StoredDataset {
 /** On-disk Upload record. Tracks files written by /upload. */
 export interface StoredUpload {
   id: string;
+  /** Owning tenant. */
+  orgId: string;
   filename: string;
   size: number;
   kind: "csv" | "xlsx";
@@ -44,6 +50,8 @@ export interface StoredUpload {
 /** On-disk Dashboard record. Layout + tiles. */
 export interface StoredDashboard {
   id: string;
+  /** Owning tenant. */
+  orgId: string;
   name: string;
   createdAt: string;
   updatedAt: string;
@@ -69,6 +77,8 @@ export interface StoredParameter {
 /** On-disk Schedule record. Used by the in-process cron runner. */
 export interface StoredSchedule {
   id: string;
+  /** Owning tenant. The runner uses this to scope storage when firing. */
+  orgId: string;
   name: string;
   cron: string;
   target: unknown;

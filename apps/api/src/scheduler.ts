@@ -9,16 +9,10 @@ import { runExport } from "./exports.js";
 /**
  * In-process scheduler.
  *
- * Reads schedules from storage at startup, registers a `node-cron` job
- * for each enabled one, and on tick runs the export to either a
- * webhook (HTTP POST of the export bytes) or a file under
- * `${DATA_DIR}/exports/<dir>/<id>.<ext>`. Real, no fakes.
- *
- * Why node-cron and not BullMQ here? BullMQ is the right choice when
- * the deployment is multi-process or HA; for the single-process v1
- * deployment node-cron is a real, in-tree cron runner. The
- * `Scheduler` API is the seam to swap for BullMQ later without
- * touching callers.
+ * Schedules carry their own orgId. On each tick the runner loads the
+ * schedule, scopes a TenantStorage to that orgId, and routes the
+ * export through the same pipeline used by request handlers. There is
+ * no path to cross-tenant data here.
  */
 export class Scheduler {
   private readonly tasks = new Map<string, cron.ScheduledTask>();
@@ -28,21 +22,17 @@ export class Scheduler {
     private readonly logger: { info: (...a: unknown[]) => void; error: (...a: unknown[]) => void },
   ) {}
 
-  /** Register all enabled schedules from storage. */
+  /** Register all enabled schedules across every org. */
   async start(): Promise<void> {
-    const all = await this.storage.listSchedules();
-    for (const s of all) {
-      if (s.enabled) this.register(s);
-    }
+    const all = await this.storage.listAllSchedules();
+    for (const s of all) if (s.enabled) this.register(s);
   }
 
-  /** Stop every registered task. Idempotent. */
   stop(): void {
     for (const t of this.tasks.values()) t.stop();
     this.tasks.clear();
   }
 
-  /** Add or replace the cron job for a schedule. */
   register(s: StoredSchedule): void {
     this.unregister(s.id);
     if (!s.enabled) return;
@@ -72,12 +62,13 @@ export class Scheduler {
   }
 
   /**
-   * Run a schedule's export and deliver it. Updates the schedule's
-   * lastRunAt / lastStatus / lastMessage fields. Real network call
-   * for webhook delivery; real disk write for file delivery.
+   * Run a schedule once and persist its lastRunAt/lastStatus/
+   * lastMessage. The schedule is looked up across every org (because
+   * the runner has no request context); the export pipeline then runs
+   * inside the schedule's own org via storage.forOrg(orgId).
    */
   async runOnce(id: string): Promise<{ ok: boolean; message: string }> {
-    const sched = await this.storage.getSchedule(id);
+    const sched = await this.storage.getScheduleAnywhere(id);
     if (!sched) return { ok: false, message: "not_found" };
 
     let result: { ok: boolean; message: string };
@@ -88,7 +79,7 @@ export class Scheduler {
       result = { ok: false, message: (err as Error).message };
     }
 
-    await this.storage.updateSchedule(id, {
+    await this.storage.updateScheduleAnywhere(id, {
       lastRunAt: new Date().toISOString(),
       lastStatus: result.ok ? "ok" : "error",
       lastMessage: result.message.slice(0, 2000),
@@ -100,10 +91,9 @@ export class Scheduler {
     sched: StoredSchedule,
     target: ExportTarget,
   ): Promise<{ ok: boolean; message: string }> {
+    const tenant = this.storage.forOrg(sched.orgId);
+
     if (sched.delivery.kind === "webhook") {
-      // Run the export to a buffer, then POST to the URL. We deliberately
-      // buffer (rather than streaming through fetch) so we can compute a
-      // content-length and surface delivery failures atomically.
       const chunks: Buffer[] = [];
       const out = new (await import("node:stream")).PassThrough();
       out.on("data", (c: Buffer) => chunks.push(c));
@@ -112,7 +102,7 @@ export class Scheduler {
         out.on("error", reject);
       });
       const meta = await runExport({
-        storage: this.storage,
+        tenant,
         format: sched.format,
         target,
         out,
@@ -129,9 +119,7 @@ export class Scheduler {
         },
         body,
       });
-      if (!res.ok) {
-        return { ok: false, message: `webhook ${res.status}` };
-      }
+      if (!res.ok) return { ok: false, message: `webhook ${res.status}` };
       return { ok: true, message: `delivered ${body.length} bytes to webhook (HTTP ${res.status})` };
     }
 
@@ -143,7 +131,7 @@ export class Scheduler {
     const path = join(dir, filename);
     const ws = createWriteStream(path, { flags: "wx", mode: 0o600 });
     try {
-      await runExport({ storage: this.storage, format: sched.format, target, out: ws });
+      await runExport({ tenant, format: sched.format, target, out: ws });
       await new Promise<void>((resolve, reject) => {
         ws.end((err: Error | null | undefined) => (err ? reject(err) : resolve()));
       });

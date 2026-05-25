@@ -1,35 +1,32 @@
 import type { FastifyInstance } from "fastify";
 import { postgresPing, ConnectorError } from "@reports/connectors";
 import { CreateSourceRequestSchema } from "@reports/shared";
-import type { Storage } from "@reports/storage";
+import type { TenantResolver } from "../tenant.js";
 
 /**
- * Source CRUD. Postgres sources are ping-tested before persistence so
- * users get fast feedback on bad credentials. Passwords are sealed
- * separately by the storage layer; they never appear in any response.
+ * Source CRUD. Postgres credentials are ping-tested before persistence
+ * and stored sealed via the storage layer's encrypted secret keyspace.
+ * Every operation runs within the requesting user's TenantStorage.
  */
-export function registerSourceRoutes(app: FastifyInstance, storage: Storage): void {
+export function registerSourceRoutes(app: FastifyInstance, tenants: TenantResolver): void {
   app.post("/sources", async (req, reply) => {
     const parsed = CreateSourceRequestSchema.safeParse(req.body);
     if (!parsed.success) {
-      return reply
-        .code(400)
-        .send({ error: "invalid_body", issues: parsed.error.issues });
+      return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
+    const tenant = tenants.for(req);
     const body = parsed.data;
 
     if (body.kind === "csv" || body.kind === "xlsx") {
-      const upload = await storage.getUpload(body.uploadId);
-      if (!upload) {
-        return reply.code(404).send({ error: "upload_not_found" });
-      }
+      const upload = await tenant.getUpload(body.uploadId);
+      if (!upload) return reply.code(404).send({ error: "upload_not_found" });
       if (upload.kind !== body.kind) {
         return reply.code(400).send({
           error: "upload_kind_mismatch",
           message: `upload kind ${upload.kind} does not match source kind ${body.kind}`,
         });
       }
-      const src = await storage.createSource({
+      const src = await tenant.createSource({
         kind: body.kind,
         name: body.name,
         uploadId: body.uploadId,
@@ -42,16 +39,12 @@ export function registerSourceRoutes(app: FastifyInstance, storage: Storage): vo
       await postgresPing(body.connection);
     } catch (err) {
       if (err instanceof ConnectorError) {
-        return reply
-          .code(400)
-          .send({ error: err.code, message: err.message });
+        return reply.code(400).send({ error: err.code, message: err.message });
       }
-      return reply
-        .code(500)
-        .send({ error: "ping_failed", message: (err as Error).message });
+      return reply.code(500).send({ error: "ping_failed", message: (err as Error).message });
     }
 
-    const src = await storage.createSource(
+    const src = await tenant.createSource(
       {
         kind: "postgres",
         name: body.name,
@@ -68,19 +61,19 @@ export function registerSourceRoutes(app: FastifyInstance, storage: Storage): vo
     return reply.code(201).send(toPublicSource(src));
   });
 
-  app.get("/sources", async () => {
-    const list = await storage.listSources();
+  app.get("/sources", async (req) => {
+    const list = await tenants.for(req).listSources();
     return list.map(toPublicSource);
   });
 
   app.get<{ Params: { id: string } }>("/sources/:id", async (req, reply) => {
-    const src = await storage.getSource(req.params.id);
+    const src = await tenants.for(req).getSource(req.params.id);
     if (!src) return reply.code(404).send({ error: "not_found" });
     return toPublicSource(src);
   });
 
   app.delete<{ Params: { id: string } }>("/sources/:id", async (req, reply) => {
-    const ok = await storage.deleteSource(req.params.id);
+    const ok = await tenants.for(req).deleteSource(req.params.id);
     if (!ok) return reply.code(404).send({ error: "not_found" });
     return reply.code(204).send();
   });
