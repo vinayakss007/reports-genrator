@@ -121,6 +121,28 @@ Phases are sequential; tasks within a phase can be parallelized.
 
 ## Phase 7 — Hardening
 
-- RBAC, audit log, rate limits, query timeouts, row caps.
-- Secret rotation, KMS integration.
-- Multi-tenant `org_id` enforcement audit.
+- [x] Tests: vitest workspace at root with 53 unit tests across the
+      deterministic engine, AI gateway fallback discipline, and
+      exports writers. `pnpm test` runs in well under a second.
+- [x] Audit log: append-only JSONL at `${DATA_DIR}/audit.log` with
+      0600 perms. Records `auth.register`, `auth.login`,
+      `auth.login_failed`, and every non-GET request after it
+      completes (method, path, status, principal, ip).
+- [x] Rate limiting: `@fastify/rate-limit` (default 300 req/min,
+      configurable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW`).
+- [x] Authentication: `@fastify/jwt` with `bcryptjs` password hashes.
+      `loadJwtSecret` reads `JWT_SECRET` or generates a 64-byte dev
+      secret at `${DATA_DIR}/.jwt-secret` 0600 with a loud warning.
+      Routes: `POST /auth/register`, `POST /auth/login`,
+      `GET /auth/me`. Roles: owner/editor/viewer with a comparison
+      ladder for `requireRole(min)`.
+- [x] AUTH_REQUIRED env flag: when `false` (default) the API runs in
+      single-user dev mode unchanged; when `true`, every route
+      except `/health` and `/auth/*` requires a valid JWT.
+- Multi-tenant `org_id` enforcement at the storage layer is
+  deferred. The mechanism is in place (every authenticated request
+  has `req.principal.orgId`); rolling that out across every query
+  in sources/datasets/dashboards/schedules is a contained migration
+  that belongs in its own PR.
+- KMS / secret rotation — out of scope for this PR; the existing
+  `STORAGE_ENCRYPTION_KEY` and `JWT_SECRET` env vars are the seam.

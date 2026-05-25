@@ -11,11 +11,14 @@
     "build": "pnpm -r --filter \"./packages/*\" build && pnpm -r --filter \"./apps/*\" build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
+    "test": "vitest --run",
+    "test:watch": "vitest",
     "dev:api": "pnpm --filter @reports/api dev",
     "dev:web": "pnpm --filter @reports/web dev"
   },
   "devDependencies": {
     "typescript": "5.6.3",
-    "@types/node": "22.7.5"
+    "@types/node": "22.7.5",
+    "vitest": "2.1.4"
   }
 }

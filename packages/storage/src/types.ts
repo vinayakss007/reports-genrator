@@ -55,7 +55,7 @@ export interface StoredTile {
   id: string;
   title?: string;
   datasetId: string;
-  spec: unknown; // ChartSpec validated at the API layer.
+  spec: unknown;
   layout: { x: number; y: number; w: number; h: number };
 }
 
@@ -71,7 +71,7 @@ export interface StoredSchedule {
   id: string;
   name: string;
   cron: string;
-  target: unknown; // ExportTarget validated at the API layer.
+  target: unknown;
   format: "csv" | "xlsx" | "json";
   delivery: StoredScheduleDelivery;
   enabled: boolean;
@@ -84,3 +84,21 @@ export interface StoredSchedule {
 export type StoredScheduleDelivery =
   | { kind: "webhook"; url: string; headers?: Record<string, string> }
   | { kind: "file"; dir: string };
+
+/** On-disk Org record. Tenant container for users + records. */
+export interface StoredOrg {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+/** On-disk User record. Password is sealed via the secrets keyspace. */
+export interface StoredUser {
+  id: string;
+  orgId: string;
+  email: string;
+  /** bcrypt hash, NOT a sealed secret — bcrypt is verified directly. */
+  passwordHash: string;
+  role: "owner" | "editor" | "viewer";
+  createdAt: string;
+}

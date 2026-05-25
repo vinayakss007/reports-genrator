@@ -9,9 +9,11 @@ import { JsonStore } from "./store.js";
 import type {
   StoredDashboard,
   StoredDataset,
+  StoredOrg,
   StoredSchedule,
   StoredSource,
   StoredUpload,
+  StoredUser,
 } from "./types.js";
 
 /**
@@ -260,6 +262,68 @@ export class Storage {
       const before = s.schedules.length;
       s.schedules = s.schedules.filter((x) => x.id !== id);
       removed = s.schedules.length < before;
+    });
+    return removed;
+  }
+
+  // ----- orgs / users (Phase 7) -----
+
+  async listOrgs(): Promise<readonly StoredOrg[]> {
+    return this.store.snapshot().orgs;
+  }
+  async getOrg(id: string): Promise<StoredOrg | null> {
+    return this.store.snapshot().orgs.find((o) => o.id === id) ?? null;
+  }
+  async createOrg(input: Omit<StoredOrg, "id" | "createdAt">): Promise<StoredOrg> {
+    const record: StoredOrg = {
+      ...input,
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    await this.store.update((s) => {
+      s.orgs.push(record);
+    });
+    return record;
+  }
+
+  async listUsers(): Promise<readonly StoredUser[]> {
+    return this.store.snapshot().users;
+  }
+  async getUser(id: string): Promise<StoredUser | null> {
+    return this.store.snapshot().users.find((u) => u.id === id) ?? null;
+  }
+  async getUserByEmail(email: string): Promise<StoredUser | null> {
+    const lower = email.toLowerCase().trim();
+    return this.store.snapshot().users.find((u) => u.email.toLowerCase() === lower) ?? null;
+  }
+  async createUser(input: Omit<StoredUser, "id" | "createdAt">): Promise<StoredUser> {
+    const record: StoredUser = {
+      ...input,
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    await this.store.update((s) => {
+      s.users.push(record);
+    });
+    return record;
+  }
+  async updateUserRole(id: string, role: StoredUser["role"]): Promise<StoredUser | null> {
+    let updated: StoredUser | null = null;
+    await this.store.update((s) => {
+      const idx = s.users.findIndex((u) => u.id === id);
+      if (idx < 0) return;
+      const next: StoredUser = { ...s.users[idx]!, role };
+      s.users[idx] = next;
+      updated = next;
+    });
+    return updated;
+  }
+  async deleteUser(id: string): Promise<boolean> {
+    let removed = false;
+    await this.store.update((s) => {
+      const before = s.users.length;
+      s.users = s.users.filter((u) => u.id !== id);
+      removed = s.users.length < before;
     });
     return removed;
   }

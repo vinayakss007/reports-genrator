@@ -1,51 +1,50 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SealedSecret } from "./crypto.js";
+import type {
+  StoredDashboard,
+  StoredDataset,
+  StoredOrg,
+  StoredSchedule,
+  StoredSource,
+  StoredUpload,
+  StoredUser,
+} from "./types.js";
 
 /**
  * Atomic, single-process JSON file store.
  *
- * Why not SQLite for Phase 1? Native dependencies require build-script
- * approval in this sandbox and ship as a binary per platform. A JSON
- * store is real, persistent, and adequate for the small metadata
- * volumes we have (sources, datasets, uploads, dashboards, schedules).
- * It is documented as the seam to swap for Postgres in production.
+ * Schema versioning: v1 had sources/datasets/uploads/secrets only.
+ * v2 added dashboards/schedules. v3 adds orgs/users.
  *
  * Concurrency model:
- *
  *  - All writes go through a single in-process async mutex so reads
- *    and writes are serialized. This is correct for a single API
- *    process and the documented v1 deployment.
+ *    and writes are serialized.
  *  - Writes use write-temp-then-rename for crash safety.
  *  - Readers read the latest in-memory snapshot after a hydrate.
  */
 
-import type {
-  StoredDashboard,
-  StoredDataset,
-  StoredSchedule,
-  StoredSource,
-  StoredUpload,
-} from "./types.js";
-
 interface DiskShape {
-  version: 2;
+  version: 3;
   sources: StoredSource[];
   datasets: StoredDataset[];
   uploads: StoredUpload[];
   dashboards: StoredDashboard[];
   schedules: StoredSchedule[];
-  /** Sealed secrets keyed by source id. */
+  orgs: StoredOrg[];
+  users: StoredUser[];
   secrets: Record<string, SealedSecret>;
 }
 
 const EMPTY: DiskShape = {
-  version: 2,
+  version: 3,
   sources: [],
   datasets: [],
   uploads: [],
   dashboards: [],
   schedules: [],
+  orgs: [],
+  users: [],
   secrets: {},
 };
 
@@ -56,7 +55,6 @@ export class JsonStore {
 
   constructor(private readonly path: string) {}
 
-  /** Load (or initialize) the store from disk. Idempotent. */
   async hydrate(): Promise<void> {
     if (this.hydrated) return;
     await fs.mkdir(dirname(this.path), { recursive: true });
@@ -65,46 +63,37 @@ export class JsonStore {
       const parsed = JSON.parse(raw) as { version?: number } & Record<string, unknown>;
       if (!parsed) throw new Error("empty store");
       const version = parsed.version;
-      // Migrate v1 -> v2 by adding empty dashboards/schedules.
-      if (version === 1) {
+      if (version === 1 || version === 2) {
+        // Migrate forward: ensure every collection exists.
         this.state = {
           ...EMPTY,
           ...(parsed as object),
-          version: 2,
-          dashboards: [],
-          schedules: [],
+          version: 3,
+          dashboards: (parsed.dashboards as StoredDashboard[]) ?? [],
+          schedules: (parsed.schedules as StoredSchedule[]) ?? [],
+          orgs: [],
+          users: [],
         } as DiskShape;
         await this.persist(this.state);
-      } else if (version === 2) {
+      } else if (version === 3) {
         this.state = parsed as unknown as DiskShape;
       } else {
         throw new Error(`unsupported store version: ${version ?? "missing"}`);
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // First run: write an empty store so subsequent reads are stable.
       await this.persist(this.state);
     }
     this.hydrated = true;
   }
 
-  /** Read-only snapshot. Callers must not mutate the returned object. */
   snapshot(): Readonly<DiskShape> {
-    if (!this.hydrated) {
-      throw new Error("JsonStore.snapshot called before hydrate()");
-    }
+    if (!this.hydrated) throw new Error("JsonStore.snapshot called before hydrate()");
     return this.state;
   }
 
-  /**
-   * Run `mutator` against the current state and persist the result.
-   * Mutations are serialized; a `mutator` should be pure and fast.
-   */
   async update(mutator: (s: DiskShape) => DiskShape | void): Promise<void> {
-    if (!this.hydrated) {
-      throw new Error("JsonStore.update called before hydrate()");
-    }
-    // Chain writes so they never overlap.
+    if (!this.hydrated) throw new Error("JsonStore.update called before hydrate()");
     const run = async (): Promise<void> => {
       const draft: DiskShape = structuredClone(this.state);
       const result = mutator(draft);
