@@ -6,7 +6,13 @@ import {
   type SealedSecret,
 } from "./crypto.js";
 import { JsonStore } from "./store.js";
-import type { StoredDataset, StoredSource, StoredUpload } from "./types.js";
+import type {
+  StoredDashboard,
+  StoredDataset,
+  StoredSchedule,
+  StoredSource,
+  StoredUpload,
+} from "./types.js";
 
 /**
  * High-level storage facade. Holds a single JsonStore plus the cached
@@ -150,6 +156,110 @@ export class Storage {
       const before = s.datasets.length;
       s.datasets = s.datasets.filter((d) => d.id !== id);
       removed = s.datasets.length < before;
+    });
+    return removed;
+  }
+
+  // ----- dashboards -----
+
+  async listDashboards(): Promise<readonly StoredDashboard[]> {
+    return this.store.snapshot().dashboards;
+  }
+
+  async getDashboard(id: string): Promise<StoredDashboard | null> {
+    return this.store.snapshot().dashboards.find((d) => d.id === id) ?? null;
+  }
+
+  async createDashboard(
+    input: Omit<StoredDashboard, "id" | "createdAt" | "updatedAt">,
+  ): Promise<StoredDashboard> {
+    const now = new Date().toISOString();
+    const record: StoredDashboard = {
+      ...input,
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.update((s) => {
+      s.dashboards.push(record);
+    });
+    return record;
+  }
+
+  async updateDashboard(
+    id: string,
+    patch: Partial<Pick<StoredDashboard, "name" | "parameters" | "tiles">>,
+  ): Promise<StoredDashboard | null> {
+    let updated: StoredDashboard | null = null;
+    await this.store.update((s) => {
+      const idx = s.dashboards.findIndex((d) => d.id === id);
+      if (idx < 0) return;
+      const next: StoredDashboard = {
+        ...s.dashboards[idx]!,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      s.dashboards[idx] = next;
+      updated = next;
+    });
+    return updated;
+  }
+
+  async deleteDashboard(id: string): Promise<boolean> {
+    let removed = false;
+    await this.store.update((s) => {
+      const before = s.dashboards.length;
+      s.dashboards = s.dashboards.filter((d) => d.id !== id);
+      removed = s.dashboards.length < before;
+    });
+    return removed;
+  }
+
+  // ----- schedules -----
+
+  async listSchedules(): Promise<readonly StoredSchedule[]> {
+    return this.store.snapshot().schedules;
+  }
+
+  async getSchedule(id: string): Promise<StoredSchedule | null> {
+    return this.store.snapshot().schedules.find((s) => s.id === id) ?? null;
+  }
+
+  async createSchedule(
+    input: Omit<StoredSchedule, "id" | "createdAt">,
+  ): Promise<StoredSchedule> {
+    const record: StoredSchedule = {
+      ...input,
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    await this.store.update((s) => {
+      s.schedules.push(record);
+    });
+    return record;
+  }
+
+  async updateSchedule(
+    id: string,
+    patch: Partial<Pick<StoredSchedule, "enabled" | "lastRunAt" | "lastStatus" | "lastMessage" | "name" | "cron" | "target" | "format" | "delivery">>,
+  ): Promise<StoredSchedule | null> {
+    let updated: StoredSchedule | null = null;
+    await this.store.update((s) => {
+      const idx = s.schedules.findIndex((x) => x.id === id);
+      if (idx < 0) return;
+      const next: StoredSchedule = { ...s.schedules[idx]!, ...patch };
+      s.schedules[idx] = next;
+      updated = next;
+    });
+    return updated;
+  }
+
+  async deleteSchedule(id: string): Promise<boolean> {
+    let removed = false;
+    await this.store.update((s) => {
+      const before = s.schedules.length;
+      s.schedules = s.schedules.filter((x) => x.id !== id);
+      removed = s.schedules.length < before;
     });
     return removed;
   }

@@ -9,6 +9,10 @@ import { registerUploadRoutes } from "./routes/uploads.js";
 import { registerSourceRoutes } from "./routes/sources.js";
 import { registerDatasetRoutes } from "./routes/datasets.js";
 import { registerChartRoutes } from "./routes/charts.js";
+import { registerDashboardRoutes } from "./routes/dashboards.js";
+import { registerExportRoutes } from "./routes/exports.js";
+import { registerScheduleRoutes } from "./routes/schedules.js";
+import { Scheduler } from "./scheduler.js";
 
 const PORT = Number.parseInt(process.env.API_PORT ?? "3001", 10);
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
@@ -52,6 +56,15 @@ export async function buildServer() {
 
   // Phase 2/4/6: chart compute + stats.
   registerChartRoutes(app, storage);
+
+  // Phase 3: dashboards, exports, schedules.
+  registerDashboardRoutes(app, storage);
+  registerExportRoutes(app, storage);
+
+  const scheduler = new Scheduler(storage, app.log);
+  registerScheduleRoutes(app, storage, scheduler);
+  await scheduler.start();
+  app.addHook("onClose", async () => scheduler.stop());
 
   return app;
 }

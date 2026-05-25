@@ -40,3 +40,47 @@ export interface StoredUpload {
   path: string;
   createdAt: string;
 }
+
+/** On-disk Dashboard record. Layout + tiles. */
+export interface StoredDashboard {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  parameters: StoredParameter[];
+  tiles: StoredTile[];
+}
+
+export interface StoredTile {
+  id: string;
+  title?: string;
+  datasetId: string;
+  spec: unknown; // ChartSpec validated at the API layer.
+  layout: { x: number; y: number; w: number; h: number };
+}
+
+export interface StoredParameter {
+  name: string;
+  field: string;
+  op: string;
+  value?: unknown;
+}
+
+/** On-disk Schedule record. Used by the in-process cron runner. */
+export interface StoredSchedule {
+  id: string;
+  name: string;
+  cron: string;
+  target: unknown; // ExportTarget validated at the API layer.
+  format: "csv" | "xlsx" | "json";
+  delivery: StoredScheduleDelivery;
+  enabled: boolean;
+  createdAt: string;
+  lastRunAt?: string;
+  lastStatus?: "ok" | "error";
+  lastMessage?: string;
+}
+
+export type StoredScheduleDelivery =
+  | { kind: "webhook"; url: string; headers?: Record<string, string> }
+  | { kind: "file"; dir: string };

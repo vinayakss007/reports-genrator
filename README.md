@@ -23,6 +23,7 @@ packages/
   core/           Deterministic engine (no AI, ever)
   connectors/     Real CSV / XLSX / Postgres readers
   storage/        Atomic JSON metadata store + encrypted secrets
+  exports/        Real CSV / XLSX / JSON writers
   ai-gateway/     Single chokepoint for AI; falls back to core
 ```
 
@@ -54,6 +55,22 @@ preview output is exactly the shape `/recommend-chart` consumes.
 | DELETE | `/datasets/:id`               | remove dataset                |
 | POST   | `/datasets/:id/preview`       | rows + computed Profile       |
 | POST   | `/recommend-chart`            | deterministic chart ranking   |
+| POST   | `/charts/auto-encode`         | Profile + chart -> ChartSpec  |
+| POST   | `/charts/compute`             | apply spec, return rows + colors |
+| POST   | `/charts/series-stats`        | STL + anomalies + Holt-Winters |
+| POST   | `/dashboards`                 | create dashboard              |
+| GET    | `/dashboards`                 | list dashboards               |
+| GET    | `/dashboards/:id`             | get one                       |
+| PUT    | `/dashboards/:id`             | update name / params / tiles  |
+| DELETE | `/dashboards/:id`             | delete                        |
+| POST   | `/exports`                    | run export, stream attachment |
+| POST   | `/exports/save`               | run export, save to data/exports |
+| GET    | `/exports/:id`                | download a saved export       |
+| POST   | `/schedules`                  | create cron schedule          |
+| GET    | `/schedules`                  | list schedules                |
+| PATCH  | `/schedules/:id`              | enable/disable, rename, recron |
+| DELETE | `/schedules/:id`              | delete                        |
+| POST   | `/schedules/:id/run-now`      | run a schedule once on demand |
 
 ### Environment
 

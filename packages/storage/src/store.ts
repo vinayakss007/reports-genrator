@@ -8,8 +8,8 @@ import type { SealedSecret } from "./crypto.js";
  * Why not SQLite for Phase 1? Native dependencies require build-script
  * approval in this sandbox and ship as a binary per platform. A JSON
  * store is real, persistent, and adequate for the small metadata
- * volumes we have (sources, datasets, uploads). It is documented as
- * the seam to swap for Postgres in production.
+ * volumes we have (sources, datasets, uploads, dashboards, schedules).
+ * It is documented as the seam to swap for Postgres in production.
  *
  * Concurrency model:
  *
@@ -20,22 +20,32 @@ import type { SealedSecret } from "./crypto.js";
  *  - Readers read the latest in-memory snapshot after a hydrate.
  */
 
-import type { StoredSource, StoredDataset, StoredUpload } from "./types.js";
+import type {
+  StoredDashboard,
+  StoredDataset,
+  StoredSchedule,
+  StoredSource,
+  StoredUpload,
+} from "./types.js";
 
 interface DiskShape {
-  version: 1;
+  version: 2;
   sources: StoredSource[];
   datasets: StoredDataset[];
   uploads: StoredUpload[];
+  dashboards: StoredDashboard[];
+  schedules: StoredSchedule[];
   /** Sealed secrets keyed by source id. */
   secrets: Record<string, SealedSecret>;
 }
 
 const EMPTY: DiskShape = {
-  version: 1,
+  version: 2,
   sources: [],
   datasets: [],
   uploads: [],
+  dashboards: [],
+  schedules: [],
   secrets: {},
 };
 
@@ -52,11 +62,24 @@ export class JsonStore {
     await fs.mkdir(dirname(this.path), { recursive: true });
     try {
       const raw = await fs.readFile(this.path, "utf8");
-      const parsed = JSON.parse(raw) as DiskShape;
-      if (!parsed || parsed.version !== 1) {
-        throw new Error(`unsupported store version: ${parsed?.version}`);
+      const parsed = JSON.parse(raw) as { version?: number } & Record<string, unknown>;
+      if (!parsed) throw new Error("empty store");
+      const version = parsed.version;
+      // Migrate v1 -> v2 by adding empty dashboards/schedules.
+      if (version === 1) {
+        this.state = {
+          ...EMPTY,
+          ...(parsed as object),
+          version: 2,
+          dashboards: [],
+          schedules: [],
+        } as DiskShape;
+        await this.persist(this.state);
+      } else if (version === 2) {
+        this.state = parsed as unknown as DiskShape;
+      } else {
+        throw new Error(`unsupported store version: ${version ?? "missing"}`);
       }
-      this.state = parsed;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       // First run: write an empty store so subsequent reads are stable.

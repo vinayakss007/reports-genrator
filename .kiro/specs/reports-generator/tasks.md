@@ -55,9 +55,35 @@ Phases are sequential; tasks within a phase can be parallelized.
 
 ## Phase 3 — Dashboards and exports
 
-- Dashboard model, 12-col grid layout, parameters, cross-filters.
-- Exports: PDF (Playwright), PNG/SVG, XLSX (exceljs), CSV.
-- Schedules: cron + email/webhook via BullMQ + Redis.
+- [x] Dashboard data model: `Dashboard { name, parameters, tiles[]
+      with layout {x,y,w,h} on a 12-col grid }`. Stored in the
+      Phase 1 JSON store with v1 -> v2 migration.
+- [x] Dashboard CRUD: POST/GET/PUT/DELETE `/dashboards`.
+- [x] Multi-tile dashboard view in the web app using
+      `react-grid-layout` with drag and resize, persisted via PUT.
+- [x] Dashboard parameters merged into every tile's filter list at
+      compute time, giving real cross-filtering across tiles.
+- [x] Server-side exports: `POST /exports` and `POST /exports/save`
+      for CSV (RFC 4180), XLSX (multi-sheet via ExcelJS), and JSON.
+      Targets: dataset, chart, dashboard.
+- [x] Frontend exports: PNG and SVG via ECharts'
+      `getDataURL()`/data-URI wrapping; CSV/XLSX/JSON via the API.
+- [x] Schedules: data model + CRUD + in-process `node-cron` runner.
+      Real webhook delivery (HTTP POST of the export bytes with
+      content-type and disposition headers); real file delivery
+      (writes to `${DATA_DIR}/exports/<dir>/<timestamp>-<id>.<ext>`).
+      `lastRunAt`, `lastStatus`, `lastMessage` persisted.
+- [x] Web UI: Schedules page (create / list / enable / run-now / delete)
+      and dashboard list / view tabs alongside Build.
+- SMTP email delivery — deferred. The mechanism is contained to a
+  new delivery kind under `Schedule.delivery`; adding nodemailer
+  with `SMTP_*` env vars is small but un-testable in this sandbox.
+- PDF rendering — deferred. The print path (CSS `@media print`)
+  works today via the browser; server-side PDF rendering needs a
+  headless browser, which is heavy to install and out of scope here.
+- Redis-backed BullMQ — out of scope for v1 single-process
+  deployment. The `Scheduler` API is the seam to swap in a queue
+  without changing callers.
 
 ## Phase 4 — Extended chart types
 

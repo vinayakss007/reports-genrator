@@ -15,21 +15,29 @@ export interface ChartRendererProps {
   computed: ComputedChart;
   /** Optional series stats overlay (anomaly band, forecast extension). */
   stats?: SeriesStats;
-  /** Display height in pixels. */
+  /** Display height in pixels. Pass undefined to fill the container. */
   height?: number;
+  /**
+   * Receives the live ECharts instance after init so callers can
+   * trigger image exports via `instance.getDataURL()`.
+   */
+  onInstance?: (instance: echarts.ECharts | null) => void;
 }
 
-export function ChartRenderer({ computed, stats, height = 360 }: ChartRendererProps) {
+export function ChartRenderer({ computed, stats, height = 360, onInstance }: ChartRendererProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    if (!instanceRef.current) instanceRef.current = echarts.init(el);
+    if (!instanceRef.current) {
+      instanceRef.current = echarts.init(el);
+      onInstance?.(instanceRef.current);
+    }
     const option = specToOption(computed, stats);
     instanceRef.current.setOption(option, { notMerge: true });
-  }, [computed, stats]);
+  }, [computed, stats, onInstance]);
 
   useEffect(() => {
     const onResize = () => instanceRef.current?.resize();
@@ -39,10 +47,11 @@ export function ChartRenderer({ computed, stats, height = 360 }: ChartRendererPr
 
   useEffect(() => {
     return () => {
+      onInstance?.(null);
       instanceRef.current?.dispose();
       instanceRef.current = null;
     };
-  }, []);
+  }, [onInstance]);
 
-  return <div ref={containerRef} style={{ width: "100%", height }} />;
+  return <div ref={containerRef} style={{ width: "100%", height: height ?? "100%" }} />;
 }
