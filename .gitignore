@@ -13,6 +13,9 @@ coverage/
 # Runtime data: uploads, store.json, dev encryption key
 data/
 
+# Production env (contains secrets)
+.env.production.local
+
 .DS_Store
 .idea/
 .vscode/
