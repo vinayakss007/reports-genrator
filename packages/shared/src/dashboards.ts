@@ -118,8 +118,15 @@ export const ScheduleDeliverySchema = z.union([
   }),
   z.object({
     kind: z.literal("file"),
-    /** Subdirectory under DATA_DIR/exports. Created if missing. */
+    /** Subdirectory under DATA_DIR/exports/<orgId>/. Created if missing. */
     dir: z.string().min(1).max(200).default("scheduled"),
+  }),
+  z.object({
+    kind: z.literal("email"),
+    /** Recipient email address(es). */
+    to: z.union([z.string().email(), z.array(z.string().email()).min(1)]),
+    /** Email subject line. Defaults to "Scheduled export: <name>". */
+    subject: z.string().max(500).optional(),
   }),
 ]);
 export type ScheduleDelivery = z.infer<typeof ScheduleDeliverySchema>;

@@ -5,6 +5,7 @@ import cron from "node-cron";
 import type { Storage, StoredSchedule } from "@reports/storage";
 import type { ExportTarget } from "@reports/shared";
 import { runExport } from "./exports.js";
+import { sendEmail, isSmtpConfigured } from "./email.js";
 
 /**
  * In-process scheduler.
@@ -123,8 +124,34 @@ export class Scheduler {
       return { ok: true, message: `delivered ${body.length} bytes to webhook (HTTP ${res.status})` };
     }
 
+    if (sched.delivery.kind === "email") {
+      if (!isSmtpConfigured()) {
+        return { ok: false, message: "SMTP_HOST not configured" };
+      }
+      const chunks: Buffer[] = [];
+      const out = new (await import("node:stream")).PassThrough();
+      out.on("data", (c: Buffer) => chunks.push(c));
+      const finished = new Promise<void>((resolve, reject) => {
+        out.on("end", resolve);
+        out.on("error", reject);
+      });
+      const meta = await runExport({ tenant, format: sched.format, target, out });
+      out.end();
+      await finished;
+      const body = Buffer.concat(chunks);
+      await sendEmail({
+        to: sched.delivery.to,
+        subject: sched.delivery.subject ?? `Scheduled export: ${sched.name}`,
+        text: `Attached: ${meta.filename} (${body.length} bytes)`,
+        attachments: [
+          { filename: meta.filename, content: body, contentType: meta.contentType },
+        ],
+      });
+      return { ok: true, message: `emailed ${body.length} bytes to ${sched.delivery.to}` };
+    }
+
     // file delivery
-    const dir = join(this.storage.root, "exports", sched.delivery.dir);
+    const dir = join(this.storage.root, "exports", sched.orgId, sched.delivery.dir);
     await fs.mkdir(dir, { recursive: true });
     const ext = sched.format;
     const filename = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.${ext}`;

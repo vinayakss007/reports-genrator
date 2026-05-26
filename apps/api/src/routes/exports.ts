@@ -52,7 +52,8 @@ export function registerExportRoutes(app: FastifyInstance, tenants: TenantResolv
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
     const tenant = tenants.for(req);
-    const dir = join(tenant.root, "exports");
+    const orgId = tenants.orgIdFor(req);
+    const dir = join(tenant.root, "exports", orgId);
     await fs.mkdir(dir, { recursive: true });
     const id = randomUUID();
     const ext = parsed.data.format;
@@ -89,13 +90,11 @@ export function registerExportRoutes(app: FastifyInstance, tenants: TenantResolv
   });
 
   app.get<{ Params: { id: string } }>("/exports/:id", async (req, reply) => {
-    // Saved exports live under DATA_DIR/exports/<uuid>.<ext>. We only
-    // expose them to the requesting tenant; we accept the lookup but
-    // there is no cross-tenant path because the dir is shared per
-    // host, not per org. A follow-up could move exports under
-    // exports/<orgId>/<uuid>.<ext>; for now access is gated on auth.
+    // Per-org export directory so tenants can't enumerate each other's
+    // exported files even when running on shared disk.
     const tenant = tenants.for(req);
-    const dir = join(tenant.root, "exports");
+    const orgId = tenants.orgIdFor(req);
+    const dir = join(tenant.root, "exports", orgId);
     let entries: string[];
     try {
       entries = await fs.readdir(dir);

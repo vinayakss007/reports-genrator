@@ -18,14 +18,30 @@ export interface RecommendChartProvider {
 }
 
 /**
- * Resolve the configured provider. In Phase 0 there are no real
- * providers, so this always returns null and the gateway always falls
- * back to core. This keeps the AI surface area zero by default.
+ * Resolve the configured provider. Returns null when no real provider
+ * is available (the default); the gateway then falls back to core.
+ *
+ * Supported providers:
+ *   - "openai"    requires OPENAI_API_KEY env
+ *   - "anthropic" placeholder (not yet implemented)
+ *   - "bedrock"   placeholder (not yet implemented)
+ *   - "none"      always null
  */
 export function getRecommendChartProvider(
-  _provider: "none" | "openai" | "anthropic" | "bedrock",
+  provider: "none" | "openai" | "anthropic" | "bedrock",
 ): RecommendChartProvider | null {
-  // Real providers are wired in Phase 5. Until then, no provider exists,
-  // and that is intentional — the product must work without AI.
+  if (provider === "openai") {
+    // Dynamic import avoided; inline require so the module tree stays
+    // small when the provider is not used.
+    try {
+      const { createOpenAIProvider } = require("./providers/openai.js") as {
+        createOpenAIProvider: () => RecommendChartProvider | null;
+      };
+      return createOpenAIProvider();
+    } catch {
+      return null;
+    }
+  }
+  // anthropic/bedrock: add adapters here following the same pattern.
   return null;
 }

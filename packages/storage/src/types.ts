@@ -93,7 +93,8 @@ export interface StoredSchedule {
 
 export type StoredScheduleDelivery =
   | { kind: "webhook"; url: string; headers?: Record<string, string> }
-  | { kind: "file"; dir: string };
+  | { kind: "file"; dir: string }
+  | { kind: "email"; to: string | string[]; subject?: string };
 
 /** On-disk Org record. Tenant container for users + records. */
 export interface StoredOrg {
